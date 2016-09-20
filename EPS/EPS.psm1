@@ -9,96 +9,158 @@
 ##
 #######################################################
 
+Set-StrictMode -Version Latest
+
 $execPath   = Split-Path -Parent -Path $MyInvocation.MyCommand.Definition
 $thisfile   = "$execPath\eps.psm1"
-#$sysLibFile = "$execPath\sys_lib.ps1"  # import built-in resources to eps file 
+$sysLibFile = "$execPath\sys_lib.ps1"  # import built-in resources to eps file 
+$p = [regex]'(?si)(?<content>.*?)(?<token><%%|%%>|<%=|<%#|<%@|<%|%>|\n)'
+$rxDirective = [regex]'(?i)\s*(?<Directive>\w+)(?<Argument>\s*(?:\w+="[^""]+"))*\s*$'
 
-## Expand-Template:
-##
-##   Key entrance of EPS
-##   Safe mode: start a new/isolated PowerShell instance to compile the templates 
-##   to prevent result from being polluted by variables in current context
-##   With Safe mode: you can pass a hashtable containing all variables to this function. 
-##   Compiling process will inject values recorded in hashtable to template
-##
-## Usage:
-##
-##    Expand-Template [[-template] <text>]|[-file <file name>] [-safe] [-binding <hashtable>]
-##
-## Examples:
-##   - Expand-Template -template $text
-##     will use current context to fill variables in template. If no '$name' exists in current context, it will produce blanks.
-##   - Expand-Template -template $text -safe -binding @{ name = "dave" }
-##     will use "dave" to render the placeholder "<%= $name %>" in template
-##
-## Other example:
-##   $result = Expand-Template -file $a_file -safe -binding @{ name = "dave" }
-##   *Note*: here using safe mode
-##
-##   or
-##
-##   $text = @'
-##   Dave is a <% if($true){ %>man<% }else{ %>lady<% } %>.
-##   Davie is <%= $age %>.
-##   '@
-##   
-##   $age = 26
-##   $result = Expand-Template -template $text
-##
+<#
+
+.SYNOPSIS
+  Expand text template
+
+.DESCRIPTION
+   Key entrance of EPS
+
+.PARAMETER template
+
+.PARAMETER file
+  
+.PARAMETER binding
+  The context in which the expansion will be performed.
+
+  If a hastable is passed variables will eb created named according
+  to the keys of the hashtable and the values bound to the keys in
+  the hashtable.
+
+  If an simple object is passed a variable named according to the
+  ModelVariableName parameter will be created receivind the value
+  passed in.
+
+.PARAMETER safe 
+   Safe mode: start a new/isolated PowerShell instance to compile the templates    
+   to prevent result from being polluted by variables in current context
+   With Safe mode: you can pass a hashtable containing all variables to this function. 
+   Compiling process will inject values recorded in hashtable to template
+
+.PARAMETER ModelVariableName
+  The 
+
+.EXAMPLE
+   Expand-Template -template $text
+   will use current context to fill variables in template. If no '$name' exists in current context, it will produce blanks.
+
+.EXAMPLE
+   Expand-Template -template $text -safe -binding @{ name = "dave" }
+   
+   will use "dave" to render the placeholder "<%= $name %>" in template
+
+.EXAMPLE
+   $result = Expand-Template -file $a_file -safe -binding @{ name = "dave" }
+   *Note*: here using safe mode
+
+   or
+
+   $text = @'
+   Dave is a <% if($true){ %>man<% }else{ %>lady<% } %>.
+   Davie is <%= $age %>.
+   '@
+   
+   $age = 26
+   $result = Expand-Template -template $text
+#>
 function Expand-Template {
+  [CmdletBinding()]
   [Diagnostics.CodeAnalysis.SuppressMessageAttribute("PSAvoidUsingInvokeExpression", "")]
   Param(
+    [Parameter(Mandatory=$true, ParameterSetName="ByTemplate")]
+    [ValidateNotNullOrEmpty()]
     [string]$Template,
+
+    [Parameter(Mandatory=$true, ParameterSetName="ByFile")]
+    [ValidateNotNullOrEmpty()]
     [string]$File,
 
     [Parameter(ValueFromPipeline=$True, ValueFromPipelinebyPropertyName=$True)]
-    [Hashtable]$binding = @{},
+    $binding = @{},
     
-    [switch]$safe
+    [Parameter(Mandatory=$false)]
+    [switch]$safe,
+
+    [Parameter(Mandatory=$false)]
+    [ValidateNotNullOrEmpty()]
+    [string]$ModelVariableName = "model"
   )
   
-  if (!$Template -and !$File) {
-    Throw New-Object System.ArgumentException "Either Template or File must be provided" 
-  }
-  
-  if($file -and (test-path $file)){
-    $temp1 = Get-Content $file
-    $template = $temp1 -join "`n"
-  }
-  
-  if($sysLibFile -and (test-path $sysLibFile)){
-    $template = "<% . $sysLibFile %>`n" + $template  
-  }
-  
-  if($safe){
-    $p = [powershell]::create()
-    
-    $block = {
-      param(
-      $temp,
-      $lib,
-      $binding = @{}    # variable binding
-      )
-      
-      . $lib   # load Compile-Raw
-
-      $binding.keys | ForEach-Object { New-Variable -Name $_ -Value $binding[$_] }     
-      
-      $script = Compile-Raw $temp      
-      Invoke-Expression $script      
+  BEGIN {
+    switch ($PSCmdlet.ParameterSetName) {
+      "ByFile" {
+        $File = Resolve-Path $File -ErrorAction:Stop
+        # for relative path in @Import directive we must change
+        # current location to the directory of the template file
+        $Template = (Get-Content $File) -join "`n"
+        Push-Location (Split-Path -Parent $File)
+      }
     }
-    
-    [void]$p.addscript($block)
-    [void]$p.addparameter("temp",$template)
-    [void]$p.addparameter("lib",$thisfile)
-    [void]$p.addparameter("binding",$binding)
-    $p.invoke()
-  }
-  else{
-    $binding.keys | ForEach-Object { New-Variable -Name $_ -Value $binding[$_] }     
 
-    $script = Compile-Raw $template
-    Invoke-Expression $script
+    
+    if($sysLibFile -and (test-path $sysLibFile)){
+      $Template = "<% . $sysLibFile %>`n" + $Template  
+    }
+
+    if (-not $safe) {
+        $script = Compile-Raw $template
+    }
+  }
+  
+  PROCESS {
+    if($safe) {
+      $p = [powershell]::create()
+      
+      $block = {
+        param(
+          $temp,
+          $lib,
+          $binding = @{},    # variable binding
+          $ModelVariableName
+        )
+        
+        . $lib   # load Compile-Raw
+
+        if ($binding -is [Hashtable]) {
+          $binding.keys | ForEach-Object { New-Variable -Name $_ -Value $binding[$_] }     
+        } else {
+          New-Variable -Name $ModelVariableName -Value $binding
+        }
+        
+        $script = Compile-Raw $temp      
+        Invoke-Expression $script      
+      }
+      
+      [void]$p.addscript($block)
+      [void]$p.addparameter("temp",$Template)
+      [void]$p.addparameter("lib",$thisfile)
+      [void]$p.addparameter("binding",$binding)
+      [void]$p.addparameter("ModelVariableName",$ModelVariableName)
+      $p.invoke()
+    } else {
+      if ($binding -is [Hashtable]) {
+        $binding.keys | ForEach-Object { New-Variable -Name $_ -Value $binding[$_] }     
+      } else {
+        New-Variable -Name $ModelVariableName -Value $binding
+      }
+
+      Invoke-Expression $script
+    }
+  } 
+  
+  END {
+      if ($PSCmdlet.ParameterSetName -eq "ByFile") {
+        Pop-Location
+      }
   }
 }
 
@@ -110,9 +172,11 @@ function Expand-Template {
 ##   you should join all lines together with new-line ("`n") as delimiters
 ##
 function Compile-Raw{
+  [CmdletBinding()]
   param(
-  [string]$raw,
-  [switch]$debug = $false
+    [Parameter(Mandatory=$true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$raw
   )
 
   #========================
@@ -122,7 +186,6 @@ function Compile-Raw{
   $post_cmd = @('$_temp')
   $put_cmd = '$_temp += '
   $insert_cmd = '$_temp += ' 
-  $p = [regex]'(?si)(?<content>.*?)(?<token><%%|%%>|<%=|<%#|<%|%>|\n)'
   
   #========================
   # 'global' variables
@@ -149,7 +212,7 @@ function Compile-Raw{
       $content = $content -replace '([`"$])', '`$1'
     
       switch($token){
-        { '<%', '<%=', '<%#' -contains $_ } {
+        { '<%', '<%=', '<%#', '<%@' -contains $_ } {
           $stag = $token          
         }
         
@@ -188,6 +251,27 @@ function Compile-Raw{
             }
             
             '<%#' { }
+
+            '<%@' { 
+                $directive = Get-Directive $content
+                if (-not $directive) {
+                    Write-Error ("Syntax error in directive [$content]") -ErrorAction:Stop
+                }
+                switch ($directive.Name) {
+                  "Import" {
+                    if (-not $directive.Arguments.ContainsKey("src")) {
+                        Write-Error ("No argument 'src' specified for @Import ") -ErrorAction:Stop
+                    }
+                    $impFile = Resolve-Path $directive.Arguments["src"] -ErrorAction:Stop
+                    $impCode = Compile-Raw ((Get-Content $impFile) -join "`n")
+                    $line += ($insert_cmd + '& {' + $impCode + '}')
+                  }
+                  default {
+                    Write-Error ("Unsupported directive [$($directive.Name)]") -ErrorAction:Stop
+                  }
+                } 
+                $w = $true
+            }
           }
           
           $stag = ''
@@ -214,10 +298,35 @@ function Compile-Raw{
   $post_cmd | ForEach-Object { $line += $_ }
   $script = ($line -join ';')
   
-  if($debug) {
-    return $line
-  }
-  
+  #Write-Debug $line
+
   $line = $null
   $script
+}
+
+function Get-Directive {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory=$true, ValueFromPipeline=$true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$Directive
+  )
+  
+  PROCESS {
+    $m = $rxDirective.Match($Directive)
+    if ($m.Success) {
+        $args = @{}
+        if ($m.Groups["Argument"]) {
+            foreach ($argStr in $m.Groups["Argument"].Captures) {
+                $argTuple = $argStr.Value.Split("=")
+                $args[$argTuple[0].Trim()] = $argTuple[1].Replace("""", "").Trim()
+            }
+        }
+        New-Object psobject -Property @{
+          Name = $m.Groups["Directive"].Value;
+          Arguments = $args;
+        }
+    }
+  }
+  
 }

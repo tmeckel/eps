@@ -1,4 +1,4 @@
-hi <%= $name %>
+﻿hi <%= $name %>
 
 please buy me the following items:
 <% 1..10 | %{ %>
@@ -12,8 +12,12 @@ dave is a
    girl
 <% } %>
 
+<%@ Import src=".\import1.eps" %>
+
 how can i say: <%% and %%>
 
 thanks,
 Dave
 <%= $(get-date -f yyyy-MM-dd) %>
+
+<%@ Import     src="import2.eps"        %>
