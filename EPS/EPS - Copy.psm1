@@ -99,9 +99,9 @@ function Expand-Template {
     switch ($PSCmdlet.ParameterSetName) {
       "ByFile" {
         $File = Resolve-Path $File -ErrorAction:Stop
+        $Template = (Get-Content $File) -join "`n"
         # for relative path in @Import directive we must change
         # current location to the directory of the template file
-        $Template = (Get-Content $File) -join "`n"
         Push-Location (Split-Path -Parent $File)
       }
     }
@@ -153,7 +153,7 @@ function Expand-Template {
         New-Variable -Name $ModelVariableName -Value $binding
       }
 
-      if ($PSCmdlet.MyInvocation.BoundParameters["Debug"] -and $PSCmdlet.MyInvocation.BoundParameters["Debug"].IsPresent) {
+      If ($PSCmdlet.MyInvocation.BoundParameters["Debug"]) {
         switch ($PSCmdlet.ParameterSetName) {
             "ByFile" {        
                 $debugFilePath = $File
@@ -166,7 +166,6 @@ function Expand-Template {
         Out-File -InputObject $script -FilePath $debugFilePath -Force
         Write-Host -f Yellow ("DEBUG: compiled EPS script written to [$debugFilePath]")
       }
-
       Invoke-Expression $script
     }
   } 
@@ -208,7 +207,6 @@ function Compile-Raw{
   $stag = ''  # start tag
   $line = @()
   $w = $false # whether last tag-pair is <% %>
-  $here = $null # HERESTRING
   
   #========================
   # start!
@@ -221,11 +219,12 @@ function Compile-Raw{
     $content = $m.groups["content"].value
     $token = $m.groups["token"].value
     
-    if($stag -eq '') {      
+    if($stag -eq ''){
+      
       # escaping characters
       $content = $content -replace '([`"$])', '`$1'
     
-      switch($token) {
+      switch($token){
         { '<%', '<%=', '<%#', '<%@' -contains $_ } {
           $stag = $token          
         }
@@ -251,21 +250,23 @@ function Compile-Raw{
       }
       
       $w = $false
-    } else {
-      switch($token) {
+    } 
+    else{
+      switch($token){
         '%>' {          
-          switch($stag) {
+          switch($stag){
             '<%' {
               $line += $content
               $w = $true
             }
             
             '<%=' {
-              if ($here) {
-                $here += $content
-                $line += ($insert_cmd + $here.Trim())
+              $content = $content.trim()
+              if ($content.StartsWith("@""") -and $content.EndsWith("""@")) {
+                # HERESTRING
+                $line += ($insert_cmd + $content)
               } else {
-                $line += ($insert_cmd + '"$(' + $content.trim() + ')"')
+                $line += ($insert_cmd + '"$(' + $content + ')"')
               }
             }
             
@@ -283,6 +284,7 @@ function Compile-Raw{
                     }
                     $impFile = Resolve-Path $directive.Arguments["src"] -ErrorAction:Stop
                     $impCode = Compile-Raw ((Get-Content $impFile) -join "`n")
+                    Write-Host -f White $impCode
                     $line += ($insert_cmd + '& {' + $impCode + '}')
                   }
                   default {
@@ -295,23 +297,24 @@ function Compile-Raw{
           
           $stag = ''
           $content = ''
-          $here = $null
         }
         
         "`n" {
-          if($stag -eq '<%' -and $content -ne ''){            
-            $line += $content + [Environment]::NewLine
-          } else {
-              if (0 -le $content.IndexOf("@""")) {
-                $here = $content
-              } elseif ($here) {
-                $here += $content
-              }
-              if ($here) {
-                $here += [Environment]::NewLine
-              }
-          }
-          $content = ''
+            switch ($stag) {
+                '<%' {
+                    if ($content -ne '') {
+                        $line += $content
+                    }
+                    $content = '' # clean content so that's not written out
+                }
+                default {
+                    $content += [Environment]::NewLine
+                }
+            }
+          #if($stag -eq '<%' -and $content -ne '') {            
+          #  $line += $content
+          #} 
+          #$content += [Environment]::NewLine
         }
         
         default {
@@ -320,31 +323,14 @@ function Compile-Raw{
       }
     }
     
-    if($content -ne '') { 
-        $line += ($put_cmd + '"' + $content + '"') 
-    }
+    if( $stag -ne '<%=' -and $content -ne '') { $line += ($put_cmd + '"' + $content + '"') }
     $m = $m.nextMatch()
   }
   
   $post_cmd | ForEach-Object { $line += $_ }
-  $sb = New-Object System.Text.StringBuilder
-  $inHere = $false;
-  foreach ($l in $line) {
-    if (0 -le $l.IndexOf("@`"")) {
-       $inHere = $true;
-    }
-    if ($inHere) {
-        if (0 -le $l.IndexOf("`"@")) {
-            [void]$sb.AppendFormat("{0};", $l)
-            $inHere = $false
-        } else {
-            [void]$sb.AppendFormat("{0}", $l)
-        }
-    } else {
-        [void]$sb.AppendFormat("{0};", $l)
-    }
-  }
-  $script = $sb.ToString()
+  $script = ($line -join ';')
+  
+  #Write-Debug $line
 
   $line = $null
   $script
