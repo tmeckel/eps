@@ -11,12 +11,18 @@ function Invoke-EpsTemplate {
 
         [Parameter(ValueFromPipeline=$True, ValueFromPipelinebyPropertyName=$True)]
         [Hashtable]$Binding = @{},
+        [Hashtable]$Helpers = @{},
 
         [switch]$Safe
     )   
     
     if ($PSCmdlet.ParameterSetName -eq 'File template') {
-        $Template = [IO.File]::ReadAllText($Path)
+        $rootedPath = $Path
+        if (![IO.Path]::isPathRooted($Path)) {
+            $rootedPath = Join-Path (Get-Location) $Path
+        }
+        
+        $Template = [IO.File]::ReadAllText($rootedPath)
     }
 
     $templateScriptBlock = New-EpsTemplateScript -Template $Template
@@ -32,7 +38,13 @@ function Invoke-EpsTemplate {
 
         try {
             $powershell = [powershell]::Create()
-            $powershell.`
+                        
+            foreach($h in $helpers.GetEnumerator()) {
+                $powershell = $powershell.AddScript("function $($h.key) { $($h.value) }")
+            }
+            $powershell.`   
+                AddScript("function Each { $function:Each }").`
+                AddScript("function Get-OrElse { ${function:Get-OrElse} }").`             
                 AddScript($block).`
                 AddParameter("Binding", $Binding).`
                 AddParameter("Script", $templateScriptBlock).`
@@ -47,7 +59,7 @@ function Invoke-EpsTemplate {
             # InvokeWithContext was introduced in PowerShell version 3.0
             $variablesToDefine = $Binding.GetEnumerator() | 
                 ForEach-Object { New-Object System.Management.Automation.PSVariable @($_.Key, $_.Value) }
-            $templateScriptBlock.InvokeWithContext(@{}, $variablesToDefine)
+            $templateScriptBlock.InvokeWithContext($helpers, $variablesToDefine)
         } else {
             $Binding.GetEnumerator() | ForEach-Object { New-Variable -Name $_.Key -Value $_.Value }
             $templateScriptBlock.Invoke()

@@ -1,5 +1,7 @@
 Set-StrictMode -Version 2
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
+. "$here\..\EPS\Each.ps1"
+. "$here\..\EPS\Get-OrElse.ps1"
 . "$here\..\EPS\New-EpsTemplateScript.ps1"
 . "$here\..\EPS\Invoke-EpsTemplate.ps1"
 
@@ -27,7 +29,9 @@ function EpsTests {
 		It '"%%>" expands to "%>"' {
 			Invoke-EpsTemplate -Template "%%>" | Should Be "%>"
 		}
+	}
 
+	Context 'with literal markers' {
 		It '"<%% a %%>" expands to "<% a %>"' {
 			Invoke-EpsTemplate -Template "<%% a %%>" | Should Be "<% a %>"
 		}
@@ -37,7 +41,27 @@ function EpsTests {
 		It '"<%% a %%>`na" expands to "<% a %>`na"' {
 			Invoke-EpsTemplate -Template "<%% a %%>`na" | Should Be "<% a %>`na"
 		}
+		It '"<%% `n %%>" expands to "<% `n %>"' {
+			Invoke-EpsTemplate -Template "<%% `n %%>" | Should Be "<% `n %>"
+		}
+		It '"<%% <%= 1 %> %%>" expands to "<% 1 %>"' {
+			Invoke-EpsTemplate -Template "<%% <%= 1 %> %%>" | Should Be "<% 1 %>"
+		}
+		It '"<%%<%= 1 %> %%>" expands to "<% 1 %>"' {
+			Invoke-EpsTemplate -Template "<%%<%= 1 %> %%>" | Should Be "<%1 %>"
+		}
+		It '"<%% <%= 1 %>%%>" expands to "<% 1 %>"' {
+			Invoke-EpsTemplate -Template "<%% <%= 1 %>%%>" | Should Be "<% 1%>"
+		}
+		It '"<%% <%= 1 -%>`n%%>" expands to "<% 1 %>"' {
+			Invoke-EpsTemplate -Template "<%% <%= 1 -%>`n%%>" | Should Be "<% 1%>"
+		}
+		It '"<%%= <%= 1 %> %%>" expands to "<% 1 %>"' {
+			Invoke-EpsTemplate -Template "<%%= <%= 1 %> %%>" | Should Be "<%= 1 %>"
+		}
+	}
 
+	Context "with comments" {
 		It '"a<%# b %>a" expands to "aa"' {
 			Invoke-EpsTemplate -Template "a<%# b %>a" | Should Be "aa"
 		}
@@ -47,6 +71,12 @@ function EpsTests {
 		It '"a<%# b %> a" expands to "a a"' {
 			Invoke-EpsTemplate -Template "a<%# b %> a" | Should Be "a a"
 		}		
+		It '"a <%# <%% %> a" expands to "a a"' {
+			Invoke-EpsTemplate -Template "a<%# <%% %> a" | Should Be "a a"
+		}
+		It '"a <%# %%> %> a" expands to "a a"' {
+			Invoke-EpsTemplate -Template "a<%# %%> %> a" | Should Be "a a"
+		}
 	}
 
 	Context 'with template "```"`$Test#``0``"' {
@@ -79,6 +109,9 @@ function EpsTests {
 			$Binding  = @{ A = "Titi"; B = "Tutu" }
 		}
 		# expression tags
+		It 'expands "Hello <%= ($A) %>!" to "Hello Titi !"' {
+			Invoke-EpsTemplate -Template 'Hello <%= ($A) %>!' -Binding $Binding | Should Be "Hello Titi!"
+		}
 		It 'expands "Hello <%=`n$A %>!" to "Hello Titi !"' {
 			Invoke-EpsTemplate -Template "Hello <%=`n`$A %>!" -Binding $Binding | Should Be "Hello Titi!"
 		}
@@ -209,11 +242,150 @@ function EpsTests {
 			$binding | Invoke-EpsTemplate -Template "<%= `$A.B`n %>" | Should Be "XXX"
 		}
 	}
+
+	Context "with @{ 'N' = `$Null; 'EA' = @(); 'E' = ''; 'V' = 'A'; 'AV' = @('A') }" {
+		$Binding = @{ 'N' = $Null; 'EA' = @(); 'E' = ''; 'V' = 'A'; 'AV' = @('A') }
+
+		It 'expands "<%= Get-OrElse $N "default" %>" to "default"' {
+			$Binding | Invoke-EpsTemplate -Template '<%= Get-OrElse $N "default" %>' | Should Be "default"
+		}
+
+		It 'expands "<%= Get-OrElse $EA "default" %>" to "default"' {
+			$Binding | Invoke-EpsTemplate -Template '<%= Get-OrElse $EA "default" %>' | Should Be "default"
+		}
+
+		It 'expands "<%= Get-OrElse $E "default" %>" to "default"' {
+			$Binding | Invoke-EpsTemplate -Template '<%= Get-OrElse $E "default" %>' | Should Be "default"
+		}
+
+		It 'expands "<%= Get-OrElse $V "default" %>" to "A"' {
+			$Binding | Invoke-EpsTemplate -Template '<%= Get-OrElse $V "default" %>' | Should Be "A"
+		}
+
+		It 'expands "<%= Get-OrElse $AV "default" %>" to "A"' {
+			$Binding | Invoke-EpsTemplate -Template '<%= Get-OrElse $AV "default" %>' | Should Be "A"
+		}
+	}
+
 	Context 'without Template or File arguments' {
 		It 'should throw an exception ' {
 			{ Invoke-EpsTemplate } | Should Throw "Parameter set cannot be resolved using the specified named parameters"
 		}
 	}
+
+	if ($psversiontable.PSVersion.Major -ge 3) {	
+		$PipelineWithJoinTemplate    = '<% $L | Each { %><%= $Index %>/<%= $_ %><% } -Join ":" %>'
+		$ArgumentWithJoinTemplate    = '<% Each -InputObject $L { %><%= $Index %>/<%= $_ %><% } -Join ":" %>'
+		$PipelineWithoutJoinTemplate = '<% $L | Each { %><%= $Index %>/<%= $_ %><% } %>'
+		$ArgumentWithoutJoinTemplate = '<% Each -InputObject $L { %><%= $Index %>/<%= $_ %><% } %>'
+		
+		Context 'with binding @{ L = @() }' {
+			$Binding  = @{ L = @() }			
+			$TestCases = @(
+				@{
+					Template = $PipelineWithJoinTemplate
+					ExpectedResult = ''
+				}
+				@{
+					Template = $ArgumentWithJoinTemplate
+					ExpectedResult = ''
+				}
+				@{
+					Template = $ArgumentWithoutJoinTemplate
+					ExpectedResult = ''
+				}
+				@{
+					Template = $ArgumentWithoutJoinTemplate
+					ExpectedResult = ''
+				}
+			)
+
+			It 'expands "<Template>" to "<ExpectedResult>"' -TestCases $TestCases {
+				Param($Template, $ExpectedResult)
+				
+				Invoke-EpsTemplate -Template $Template -Binding $Binding | Should Be $ExpectedResult
+			}
+		}
+
+		Context 'with binding @{ L = @(1) }' {
+			$Binding  = @{ L = @(1) }			
+			$TestCases = @(
+				@{
+					Template = $PipelineWithJoinTemplate
+					ExpectedResult = '0/1'
+				}
+				@{
+					Template = $ArgumentWithJoinTemplate
+					ExpectedResult = '0/1'
+				}
+				@{
+					Template = $ArgumentWithoutJoinTemplate
+					ExpectedResult = '0/1'
+				}
+				@{
+					Template = $ArgumentWithoutJoinTemplate
+					ExpectedResult = '0/1'
+				}
+			)
+
+			It 'expands "<Template>" to "<ExpectedResult>"' -TestCases $TestCases {
+				Param($Template, $ExpectedResult)
+				
+				Invoke-EpsTemplate -Template $Template -Binding $Binding | Should Be $ExpectedResult
+			}
+		}
+
+
+		Context 'with binding @{ L = @(1, 2, 3) }' {
+			$Binding  = @{ L = @(1, 2, 3) }			
+			$TestCases = @(
+				@{
+					Template = $PipelineWithJoinTemplate
+					ExpectedResult = '0/1:1/2:2/3'
+				}
+				@{
+					Template = $ArgumentWithJoinTemplate
+					ExpectedResult = '0/1:1/2:2/3'
+				}
+				@{
+					Template = $ArgumentWithoutJoinTemplate
+					ExpectedResult = '0/11/22/3'
+				}
+				@{
+					Template = $ArgumentWithoutJoinTemplate
+					ExpectedResult = '0/11/22/3'
+				}
+			)
+
+			It 'expands "<Template>" to "<ExpectedResult>"' -TestCases $TestCases {
+				Param($Template, $ExpectedResult)
+				
+				Invoke-EpsTemplate -Template $Template -Binding $Binding | Should Be $ExpectedResult
+			}
+		}
+
+		Context "with custom helpers" {
+			$helpers = @{
+				Foo = { param($f) return "foo-$f" }
+				Bar = { param($p1, $p2) return "bar-$p1-$p2" }
+				NumberedList = { param($arr)                
+					$arr | foreach-object {$i=1} { "$i. $_"; $i++ } | out-string 
+				  }
+			}
+			It "expands single-arg helper function" {
+				Invoke-EpsTemplate -Template "<%= Foo bar %>" -helpers $helpers | Should Be "foo-bar"
+			}
+			It "expands multi-arg helper function" {
+				Invoke-EpsTemplate -Template "<%= Bar bar1 bar2 %>" -helpers $helpers | Should Be "bar-bar1-bar2"
+			}
+			It "expands array-arg helper function" {
+			Invoke-EpsTemplate -Template '<%= NumberedList "Dave", "Bob", "Alice" %>' -helpers $helpers | Should Be "1. Dave
+2. Bob
+3. Alice
+"
+			}
+		}
+	}	
 }
 
 Describe 'Invoke-EpsTemplate' {
